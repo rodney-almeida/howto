@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Updating Repo ReadMe Files with Pipeline"
+title: "Dynamically create README from Azure DevOps Pipeline and Commit to Repository"
 author: Rodney Almeida
 categories:
   - Azure
@@ -9,15 +9,14 @@ tags:
   - Azure Devops
 ---
 
-*Today's post comes from guest contributor Rodney Almeida*
+Bernie White has a Powershell Module ([PSDocs](https://github.com/BernieWhite/PSDocs)) that can generate mark down files (*.md) and Stefan Stranger's [blog post](https://stefanstranger.github.io/2020/04/12/CreatingAzureDevOpsWIKIPagesFromWithApipeline/) shows us how to upload these to Azure DevOps Wiki. We started investigating this as we saw this being a great feature to automate the creation and maintenance of our README.md files within our IaC Templates. The only issue is that our README.md files live side by side with our ARM Templates in the Azure DevOps Repositories and not in the Wiki section that Stefan's post updates.
+So the challenge is, how do we make our Azure Pipelines write back the README.md files it dynamically creates on the build agent to the repository?
 
-Bernie White has a Powershell Module ([PSDocs](https://github.com/BernieWhite/PSDocs)) that can generate mark down file (*.md) and Stefan Stranger's [blog post](https://stefanstranger.github.io/2020/04/12/CreatingAzureDevOpsWIKIPagesFromWithApipeline/) shows us how to upload these to a DevOps Wiki. We started investigating this as we saw this being a great feature to automate the creation and maintenance of README.md files within our IaC Templates. The only issue we had is that our README.md files live side by side with our ARM Templates in the Azure DevOps Repositories and not in the Wiki section that Stefan's post updates. So the challenge is, how do we make our Azure Pipelines write back the README.md files it creates on the agents to the repository?
-
-Solution is to use git within the pipeline to commit the change to the modified and\or created file back to the repository.
+The solution was to use Git within the pipeline to commit the new or updated README file to the repository.
 
 ## Requirements
 
-First thing I found was this Microsoft [documentation](https://docs.microsoft.com/en-us/azure/devops/pipelines/scripts/git-commands?view=azure-devops&tabs=yaml) which specifies additional access requirements for **Project Collection Build Service**. However we found that our pipelines was using the `<Project>'s Build Service (<Organisation>)` account and therefore we assigned the additional access to that account.
+First thing we found was this Microsoft [documentation](https://docs.microsoft.com/en-us/azure/devops/pipelines/scripts/git-commands?view=azure-devops&tabs=yaml) which specifies additional access requirements for the **Project Collection Build Service**. However, we found that our pipelines were using the `<Project>'s Build Service (<Organisation>)` account instead and therefore we had to assign the additional access to that account.
 
 > Note: Permissions "Read" and "Create Tag" where already Inherited so not need to reassign again.
 
@@ -25,7 +24,7 @@ First thing I found was this Microsoft [documentation](https://docs.microsoft.co
 
 ## Create ReadMe Template and Calling Script
 
-Next, we created our own template file called `ReadMe.doc.ps1` using Bernie's [ARM Template example](https://github.com/BernieWhite/PSDocs/blob/master/docs/scenarios/arm-template/arm-template.doc.ps1) as a base. 
+Next, we created our own PowerShell template file called `ReadMe.doc.ps1` using Bernie's [ARM Template example](https://github.com/BernieWhite/PSDocs/blob/master/docs/scenarios/arm-template/arm-template.doc.ps1) as a base. For more information regarding how to create the template PowerShell script have a look at Bernie's example.
 
 ```powershell
 #
@@ -100,7 +99,7 @@ document 'README' {
 }
 ```
 
-As well as a calling script called `CreateReadMeWiki.ps1`
+We will also create a PowerShell script called `CreateReadMe.ps1` that will call the `ReadMe.doc.ps1` and pass on the required parameters like our ARM template file and metadafile.
 
 ```powershell
 param (
@@ -130,9 +129,9 @@ $PSDocsInputObject = New-Object PsObject -property @{
 Invoke-PSDocument -Path "$WorkingDir\$DocTemplatePath" -InputObject $PSDocsInputObject -OutputPath "$WorkingDir\$PipelineName" -Instance README
 ```
 
-## Create a BASH script to run the git commands
+## Create a BASH script to run the git commands and commit the new README file to the repository
 
-We also created a BASH script called `GITCommitReadMeFile.sh` to run the set to git commands needed to be able to be reused in all our IaC Template Pipelines.
+Last we also need to create a BASH script called `GITCommitReadMeFile.sh`. This will run the necessary git commands needed to upload our new README file to our repository.
 
 ```bash
 BRANCH=$1
@@ -164,10 +163,9 @@ git status
 
 > Note: We are using `git add $FILETOCOMMIT` to only commit the README.md file to minimise the risk of this process completely destroying our repository.
 
-
 ## Creating a Pipeline Job
 
-Next we to put all these together into a pipeline job.
+Let's put everything together into a pipeline job. The first task will call the Readme.doc.ps1 file with the required parameters as mentioned above, the second task will add and commit the new file to our repository.
 
 ```yml
   - job: UpdateReadMe
@@ -179,7 +177,7 @@ Next we to put all these together into a pipeline job.
       name: 'CreateReadMe'
       displayName: 'Create ReadMe File'
       inputs:
-        filePath: '$(System.DefaultWorkingDirectory)\000-Scripts\CreateReadMeWiki.ps1'
+        filePath: '$(System.DefaultWorkingDirectory)\000-Scripts\CreateReadMe.ps1'
         arguments: '-WorkingDir $(System.DefaultWorkingDirectory) -PipelineName $(Build.DefinitionName) -PipelineID $(System.DefinitionId) -DocTemplatePath 000-Scripts\ReadMe.doc.ps1 -LinkedTemplatePath $(LinkedTemplatePrefix)'
         errorActionPreference: 'silentlyContinue'
     - task: Bash@3
